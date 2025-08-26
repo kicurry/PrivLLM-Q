@@ -23,10 +23,10 @@ macro(add_ffn_executable target_name main_source)
 endmacro()
 
 # Add executables using the macro
-add_ffn_executable(test_ffn_ntt_pmult ffn_ntt_pmult.cpp)
-add_ffn_executable(test_ffn_less_ntt ffn_less_ntt.cpp)
-add_ffn_executable(test_ffn_less_ntt_nobsgs ffn_less_ntt_nobsgs.cpp)
+add_ffn_executable(test_ffn_baseline ffn_ntt_pmult.cpp)
+add_ffn_executable(test_ffn_gsd ffn_less_ntt.cpp)
+add_ffn_executable(test_ffn_gsd_nobsgs ffn_less_ntt_nobsgs.cpp)
 
 if(USE_HE_GPU)
-    add_ffn_executable(test_ffn_less_ntt_lr ffn_less_ntt_lazy_reduction.cpp)
+    add_ffn_executable(test_ffn_gsd_falr ffn_less_ntt_lazy_reduction.cpp)
 endif()

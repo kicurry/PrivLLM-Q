@@ -72,6 +72,31 @@ The script takes two arguments: a **profile** and the **path to the executable**
 
 *   **`<path_to_executable>`**: The relative path to the test program you want to run. You can easily find this using **Tab-completion** in your shell.
 
+
+---
+
+### **Mapping Executables to Paper Contributions**
+
+To help reviewers connect our experimental results with the contributions described in the paper, this section explains what each key executable in the `fastFFN/` directory represents.
+
+*   `test_ffn_baseline`
+    *   **Corresponds to: Baseline**
+    *   This executable represents our **Baseline** implementation. It improves upon the native `phantom` library by pre-transforming all ciphertext-plaintext multiplication inputs into the NTT domain. In the context of our paper, this corresponds to the baseline large-scale MatMul computation flow that reuses the results of the Baby-Step Rotation (BS-HRot) stage.
+
+*   `test_ffn_gsd` & `test_ffn_gsd_nobsgs`
+    *   **Corresponds to: Giant-Step Deferral (GSD)**
+    *   These executables implement the **Giant-Step Deferral (GSD)** optimization. The core idea is to reduce the number of costly HRot by merging the Giant-Step Rotation (GS-HRot) calculations from different input tiles that contribute to the same output tile.
+    *   The `test_ffn_gsd_nobsgs` variant is a special case where the 'giant-step' size is set to 1. This program is crucial as it isolates the structural benefits of the 'less-NTT' approach. **We recommend using `test_ffn_gsd` for evaluating the core GSD improvement.**
+
+*   `test_ffn_gsd_falr`
+    *   **Corresponds to: GSD + Fused HE-MAC (FALR)**
+    *   This executable incorporates the **Fused HE-MAC Reduction (FALR)** optimization on top of GSD. It further boosts performance by fusing all Homomorphic Multiply-Accumulate (HE-MAC) operations into a single, large computational kernel.
+
+*   **A Note on HIFA Optimization**
+    *   The **Hybrid INT32-FP64 Arithmetic (HIFA)** optimization is a hardware-level enhancement that is not tied to a specific executable. Instead, it is a **compile-time option** controlled by the `--fp64` flag in the `build.sh` script and is automatically enabled by the recommended `--perf` build. It accelerates the underlying arithmetic for **all** executables when the project is compiled with it.
+
+---
+
 ### Walkthrough: Reproducing Performance Results
 
 Here is a step-by-step guide to reproduce the key performance figures.
@@ -84,7 +109,7 @@ Here is a step-by-step guide to reproduce the key performance figures.
 
 **Step 2: Run the tests.**
 
-We recommend using `test_ffn_less_ntt_nobsgs` as a representative example of our matrix multiplication algorithm.
+We recommend using `test_ffn_gsd` as a representative example of our matrix multiplication algorithm.
 
 #### A) Test the Baseline (`noquant`) Performance
 
@@ -96,7 +121,7 @@ chmod +x scripts/run_perf_tests.sh
 chmod +x scripts/helper/run_ffn_workload.sh
 
 # Run the test
-./scripts/run_perf_tests.sh noquant build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_less_ntt_nobsgs
+./scripts/run_perf_tests.sh noquant build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_gsd
 ```
 
 #### B) Test Our Optimized (`privllm-q`) Performance
@@ -104,7 +129,7 @@ chmod +x scripts/helper/run_ffn_workload.sh
 Now, run the same test but with the `privllm-q` profile. Notice that we use the *exact same executable*; the performance difference comes from the change in runtime parameters managed by the profile.
 
 ```sh
-./scripts/run_perf_tests.sh privllm-q build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_less_ntt_nobsgs
+./scripts/run_perf_tests.sh privllm-q build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_gsd
 ```
 
 ### Understanding the Output
@@ -117,10 +142,12 @@ Test Summary
 ======================================================
 FFN Dimension        | MatMul Time          | Noise Budget
 -----------------------------------------------------------------
-128,4096,4096        | 1234 ms              | 55 bits
-128,4096,12288       | 2345 ms              | 54 bits
+128,4096,4096        | xxx ms              | x bits
+128,4096,12288       | xxx ms              | x bits
 ...
 ======================================================
 ```
 
 By comparing the `MatMul Time` column from the `noquant` and `privllm-q` runs, you can directly observe the performance improvement of our method.
+
+**A Note on `Noise Budget` column**: *N/A bits* when using `run_perf_tests.sh` or `run_ffn_workload.sh`

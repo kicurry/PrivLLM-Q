@@ -21,9 +21,9 @@ usage() {
     echo "  <path_to_executable>  Relative path from the project root to the executable."
     echo ""
     echo "Example (using tab-completion to find the executable):"
-    echo "  $0 noquant build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_less_ntt_nobsgs"
+    echo "  $0 noquant build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_gsd_falr"
     echo ""
-    echo "  $0 privllm-q build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_ntt_pmult"
+    echo "  $0 privllm-q build_fp64_on_rnsbatch_on_validation_off/fastFFN/test_ffn_baseline"
 }
 
 # --- Argument Validation ---
