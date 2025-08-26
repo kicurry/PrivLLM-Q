@@ -91,8 +91,8 @@ To help reviewers connect our experimental results with the contributions descri
     *   The `test_ffn_gsd_nobsgs` variant is a special case where the 'giant-step' size is set to 1. **We recommend using `test_ffn_gsd` for evaluating the core GSD improvement.**
 
 *   `test_ffn_gsd_falr`
-    *   **Corresponds to: GSD + Fused HE-MAC (FALR)**
-    *   This executable incorporates the **Fused HE-MAC Reduction (FALR)** optimization on top of GSD. It further boosts performance by fusing all Homomorphic Multiply-Accumulate (HE-MAC) operations into a single, large computational kernel.
+    *   **Corresponds to: GSD + Fused HE-MAC Lazy Reduction (FALR)**
+    *   This executable incorporates the **Fused HE-MAC Lazy Reduction (FALR)** optimization on top of GSD. It further boosts performance by fusing all Homomorphic Multiply-Accumulate (HE-MAC) operations into a single, large computational kernel.
 
 *   **A Note on HIFA Optimization**
     *   The **Hybrid INT32-FP64 Arithmetic (HIFA)** optimization is a hardware-level enhancement that is not tied to a specific executable. Instead, it is a **compile-time option** controlled by the `--fp64` flag in the `build.sh` script and is automatically enabled by the recommended `--perf` build. It accelerates the underlying arithmetic for **all** executables when the project is compiled with it.
