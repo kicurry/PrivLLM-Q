@@ -55,7 +55,6 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
 There are some useful information as follows:
 - `--model_path` is the path to the pretrained model.
 - `--save_quant_dir` is the path to save the quantized model.
-- You can add `--epochs 20` to introduce fine-tuning to further boost the performance.
 #### 2.Evaluate the quantized model without clip
 Change the code in `quantize/quantizer.py`, change `if True` on line 209 to `if self.quant_type == "weight":`; change `if True` on line 244 to `if self.quant_type == "weight":`. Comment out `x_int = x_int.clamp(self.qmin, self.qmax)` on line 264.
 
