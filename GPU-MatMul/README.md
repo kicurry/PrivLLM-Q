@@ -88,7 +88,7 @@ To help reviewers connect our experimental results with the contributions descri
 *   `test_ffn_gsd` & `test_ffn_gsd_nobsgs`
     *   **Corresponds to: Giant-Step Deferral (GSD)**
     *   These executables implement the **Giant-Step Deferral (GSD)** optimization. The core idea is to reduce the number of costly HRot by merging the Giant-Step Rotation (GS-HRot) calculations from different input tiles that contribute to the same output tile.
-    *   The `test_ffn_gsd_nobsgs` variant is a special case where the 'giant-step' size is set to 1. This program is crucial as it isolates the structural benefits of the 'less-NTT' approach. **We recommend using `test_ffn_gsd` for evaluating the core GSD improvement.**
+    *   The `test_ffn_gsd_nobsgs` variant is a special case where the 'giant-step' size is set to 1. **We recommend using `test_ffn_gsd` for evaluating the core GSD improvement.**
 
 *   `test_ffn_gsd_falr`
     *   **Corresponds to: GSD + Fused HE-MAC (FALR)**
