@@ -1,4 +1,4 @@
-# HE_Quant: Build and Test Instructions
+# PrivLLM-Q: Build and Test Instructions
 
 This document provides instructions for reviewers to build the project and reproduce the performance results presented in our paper. We have provided convenient scripts to automate the entire process.
 
