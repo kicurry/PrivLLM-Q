@@ -1,0 +1,7 @@
+.cache
+.cache/
+.vscode
+build/
+
+*.zip
+*.tar.gz

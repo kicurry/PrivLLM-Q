@@ -1,0 +1,7 @@
+[submodule "GPU-MatMul/deps/phantom-fhe"]
+	path = GPU-MatMul/deps/phantom-fhe
+	url = https://github.com/encryptorion-lab/phantom-fhe.git
+
+[submodule "GPU-MatMul/deps/SEAL"]
+	path = GPU-MatMul/deps/SEAL
+	url = https://github.com/microsoft/SEAL.git
