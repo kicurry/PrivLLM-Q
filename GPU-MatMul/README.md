@@ -16,7 +16,7 @@ The build process, including fetching dependencies, patching, and compilation, i
 
 ### Step 1: Clone the Repository
 
-First, clone the repository and all its submodules using the `--recursive` flag.
+First, clone the repository and all its submodules using the `--recursive` flag. Run this command from the toplevel of the working tree:
 
 ```sh
 git submodule update --init --recursive
