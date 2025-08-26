@@ -67,8 +67,8 @@ The script takes two arguments: a **profile** and the **path to the executable**
 ```
 
 *   **`<profile>`**: Determines the runtime parameters for the test.
-    *   `noquant`: Represents the **non-quantized baseline**. It uses a larger plaintext bit-width (`plainWidth=60`) and RNS compoents {40,40,40,40,40}, resulting in higher precision but slower performance.
-    *   `privllm-q`: Represents **our proposed optimized solution**. It uses a smaller, quantization-aware plaintext bit-width (`plainWidth=20`) and RNS compoents {34,34,34}, leading to significant performance gains.
+    *   `noquant`: Represents the **non-quantized baseline**. It uses a larger plaintext bit-width (`plainWidth=60`) and RNS components {40,40,40,40,40}, resulting in higher precision but slower performance.
+    *   `privllm-q`: Represents **our proposed optimized solution**. It uses a smaller, quantization-aware plaintext bit-width (`plainWidth=20`) and RNS components {34,34,34}, leading to significant performance gains.
 
 *   **`<path_to_executable>`**: The relative path to the test program you want to run. You can easily find this using **Tab-completion** in your shell.
 
