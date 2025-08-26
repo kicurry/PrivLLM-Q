@@ -2,6 +2,6 @@
 .cache/
 .vscode
 build/
-
+build_fp64_on_rnsbatch_on_validation_off/
 *.zip
 *.tar.gz
