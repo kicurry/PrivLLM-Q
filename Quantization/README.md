@@ -4,9 +4,9 @@ Official PyTorch implementation for PrivLLM-Q quantization part. This repo is ba
 
 ## Installation
 ```
-conda create -n prefixquant python==3.10
+conda create -n privllmq python==3.10
 
-conda activate prefixquant
+conda activate privllmq
 
 pip install -r requirements.txt
 ```
