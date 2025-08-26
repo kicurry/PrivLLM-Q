@@ -1,4 +1,4 @@
-# HE_Quant: Build and Test Instructions
+# PrivLLM-Q: Build and Test Instructions
 
 This document provides instructions for reviewers to build the project and reproduce the performance results presented in our paper. We have provided convenient scripts to automate the entire process.
 
@@ -8,7 +8,9 @@ Before you begin, please ensure you have the following software installed:
 
 *   A modern C++ compiler (e.g., g++ 9 or newer, clang++ 10 or newer)
 *   CMake (version 3.10 or newer)
-*   Git
+*   Git (version 1.8.5 or newer)
+
+We have tested the build process on Ubuntu 20.04.
 
 ## 1. Building the Project
 
@@ -16,7 +18,7 @@ The build process, including fetching dependencies, patching, and compilation, i
 
 ### Step 1: Clone the Repository
 
-First, clone the repository and all its submodules using the `--recursive` flag.
+First, clone the repository and all its submodules using the `--recursive` flag. Run this command from the toplevel of the working tree:
 
 ```sh
 git submodule update --init --recursive
@@ -67,10 +69,10 @@ The script takes two arguments: a **profile** and the **path to the executable**
 ```
 
 *   **`<profile>`**: Determines the runtime parameters for the test.
-    *   `noquant`: Represents the **non-quantized baseline**. It uses a larger plaintext bit-width (`plainWidth=60`) and RNS compoents {40,40,40,40,40}, resulting in higher precision but slower performance.
-    *   `privllm-q`: Represents **our proposed optimized solution**. It uses a smaller, quantization-aware plaintext bit-width (`plainWidth=20`) and RNS compoents {34,34,34}, leading to significant performance gains.
+    *   `noquant`: Represents the **non-quantized baseline**. It uses a larger plaintext bit-width (`plainWidth=60`) and RNS components {40,40,40,40,40}, resulting in higher precision but slower performance.
+    *   `privllm-q`: Represents **our proposed optimized solution**. It uses a smaller, quantization-aware plaintext bit-width (`plainWidth=20`) and RNS components {34,34,34}, leading to significant performance gains.
 
-*   **`<path_to_executable>`**: The relative path to the test program you want to run. You can easily find this using **Tab-completion** in your shell.
+*   **`<path_to_executable>`**: The relative path to the test program you want to run. You can easily find these binaries in `build_fp64_on_rnsbatch_on_validation_off/fastFFN`.
 
 
 ---

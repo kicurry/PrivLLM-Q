@@ -2,6 +2,6 @@
 .cache/
 .vscode
 build/
-
+build*/
 *.zip
 *.tar.gz
