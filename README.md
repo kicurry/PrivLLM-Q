@@ -2,7 +2,6 @@
 
 This repository provides the artifact for our USENIX Security 2026 paper.  
 
----
 
 ## Overview
 
