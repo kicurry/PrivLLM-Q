@@ -3,3 +3,4 @@ CUDA_VISIBLE_DEVICES=1 python eval.py \
 --eval_batch_size 64 \
 --eval_ppl \
 --eval_tasks  piqa,arc_easy,arc_challenge,hellaswag,winogrande
+

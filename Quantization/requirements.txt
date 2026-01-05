@@ -6,10 +6,10 @@ numpy==1.23.4
 tqdm==4.64.1
 transformers==4.40.1
 torch>=2.2.2
-fast-hadamard-transform
+# fast-hadamard-transform
 termcolor
 sentencepiece
 protobuf
 matplotlib
-
-
+einops
+peft==0.10.0

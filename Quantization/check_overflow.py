@@ -69,6 +69,10 @@ def add_overflow_hook(model):
             stat[name+"_var"] = torch.var(x_int)
         else:
             stat[name+"_var"] = ema_factor * stat[name+"_var"] + (1-ema_factor) * torch.var(x_int)
+        if name+"_mean" not in stat:
+            stat[name+"_mean"] = torch.mean(x_int)
+        else:
+            stat[name+"_mean"] = ema_factor * stat[name+"_mean"] + (1-ema_factor) * torch.mean(x_int)
         
         # for bit in [4,5,6,7,8]:
         #     lower_bound = -2**(bit-1)
@@ -114,6 +118,23 @@ def process_stat(model_name):
             processed_stat[layer_idx]["up_gate_var"] = value
         elif "down_proj.input_quantizer_var" in name:
             processed_stat[layer_idx]["down_var"] = value
+        
+        if "input_layernorm.output_quantizer_mean" in name:
+            processed_stat[layer_idx]["qkv_mean"] = value
+        elif "v_proj.output_quantizer_mean" in name:
+            processed_stat[layer_idx]["v_mean"] = value
+        elif "k_quantizer_mean" in name:
+            processed_stat[layer_idx]["k_mean"] = value
+        elif "q_quantizer_mean" in name:
+            processed_stat[layer_idx]["q_mean"] = value
+        elif "s_quantizer_mean" in name:
+            processed_stat[layer_idx]["s_mean"] = value
+        elif "o_proj.input_quantizer_mean" in name:
+            processed_stat[layer_idx]["o_mean"] = value
+        elif "post_attention_layernorm.output_quantizer_mean" in name:
+            processed_stat[layer_idx]["up_gate_mean"] = value
+        elif "down_proj.input_quantizer_mean" in name:
+            processed_stat[layer_idx]["down_mean"] = value
     if model_name == "llama3":
         torch.save(processed_stat, "llama3_processed_stat.pth")
     elif model_name == "llama2":
@@ -121,6 +142,81 @@ def process_stat(model_name):
     else:
         raise ValueError(f"Unsupported model: {model_name}")
     print(processed_stat)
+
+def compute_bound(model, model_name):
+    stat = torch.load(f"{model_name}_processed_stat.pth")
+    res = [{} for _ in range(32)]
+    for name,layer in model.named_modules():
+        if isinstance(layer,int_linear_fake.QuantLinear):
+            # print("name:",name)
+            layer_idx = int(name.split(".")[2])
+            weight_int = layer.weight_quantizer.get_int(layer.weight).to(torch.float64)
+            # print(weight_int.shape)
+            # Compute L1 and L2 norms along the input dimension (dim=1) for each output neuron
+            l1_norms = torch.norm(weight_int, p=1, dim=1).detach().cpu().numpy()  # [out_features]
+            l2_norms = torch.norm(weight_int, p=2, dim=1).detach().cpu().numpy()  # [out_features]
+            # Take the maximum ratio across all output neurons (dim=0)
+            tmp_k = np.min(l1_norms / l2_norms)
+            # print(tmp_k)
+            if "q_proj" in name or "k_proj" in name or "v_proj" in name:
+                sigma_x = torch.sqrt(stat[layer_idx]["qkv_var"]).detach().cpu().numpy()
+                mean_x = stat[layer_idx]["qkv_mean"].detach().cpu().numpy()
+            elif "o_proj" in name:
+                sigma_x = torch.sqrt(stat[layer_idx]["o_var"]).detach().cpu().numpy()
+                mean_x = stat[layer_idx]["o_mean"].detach().cpu().numpy()
+            elif "up_proj" in name or "gate_proj" in name:
+                sigma_x = torch.sqrt(stat[layer_idx]["up_gate_var"]).detach().cpu().numpy()
+                mean_x = stat[layer_idx]["up_gate_mean"].detach().cpu().numpy()
+            elif "down_proj" in name:
+                sigma_x = torch.sqrt(stat[layer_idx]["down_var"]).detach().cpu().numpy()
+                mean_x = stat[layer_idx]["down_mean"].detach().cpu().numpy()
+            else:
+                raise ValueError(f"Unsupported layer: {name}")
+            k = 8/sigma_x * tmp_k
+            weight_int = weight_int.detach().cpu().numpy()
+            delta = mean_x * np.sum(weight_int, axis=1) / (sigma_x * l2_norms)
+            delta = np.max(delta)
+            delta = delta.astype(np.float64)
+            k = k.astype(np.float64)
+            p_overflow = 1-st.norm.cdf(k-delta) + st.norm.cdf(-k-delta)
+            res[layer_idx][name] = p_overflow
+            res[layer_idx][name+"_mean"] = mean_x
+            res[layer_idx][name+"_sigma"] = sigma_x
+        elif isinstance(layer, QKRotationWrapper):
+            layer_idx = int(name.split(".")[2])
+            sigma_q = torch.sqrt(stat[layer_idx]["q_var"]).detach().cpu().numpy()
+            sigma_k = torch.sqrt(stat[layer_idx]["k_var"]).detach().cpu().numpy()
+            mean_q = stat[layer_idx]["q_mean"].detach().cpu().numpy()
+            mean_k = stat[layer_idx]["k_mean"].detach().cpu().numpy()
+            mean_z = 128 * mean_q * mean_k
+            sigma_z = np.sqrt(128 * (sigma_q**2 * sigma_k**2 + sigma_q**2 * mean_k**2 + sigma_k**2 * mean_q**2))
+            sigma_z = np.max(sigma_z)
+            sigma_q = sigma_q.astype(np.float32)
+            sigma_k = sigma_k.astype(np.float32)
+            T_bound = 128 * (2 ** 3 -1 )*(2 ** 3 -1 )
+            p_overflow = 1-st.norm.cdf((T_bound-mean_z)/sigma_z) + st.norm.cdf((-T_bound-mean_z)/sigma_z)
+            res[layer_idx][name] = p_overflow
+            res[layer_idx][name+"_mean"] = mean_z
+            res[layer_idx][name+"_sigma"] = sigma_z
+        elif "s_quantizer" in name:            
+            layer_idx = int(name.split(".")[2])
+            sigma_v = torch.sqrt(stat[layer_idx]["v_var"]).detach().cpu().numpy()
+            sigma_s = torch.sqrt(stat[layer_idx]["s_var"]).detach().cpu().numpy()
+            mean_v = stat[layer_idx]["v_mean"].detach().cpu().numpy()
+            mean_s = stat[layer_idx]["s_mean"].detach().cpu().numpy()
+            mean_z = 128 * mean_v * mean_s
+            sigma_z = np.sqrt(128 * (sigma_v**2 * sigma_s**2 + sigma_v**2 * mean_s**2 + sigma_s**2 * mean_v**2))
+            sigma_z = np.max(sigma_z)
+            sigma_v = sigma_v.astype(np.float32)
+            sigma_s = sigma_s.astype(np.float32)
+            T_bound = 128 * (2 ** 7 -1 )*(2 ** 3 -1 )
+            p_overflow = 1-st.norm.cdf((T_bound-mean_z)/sigma_z) + st.norm.cdf((-T_bound-mean_z)/sigma_z)
+            res[layer_idx][name] = p_overflow   
+            res[layer_idx][name+"_mean"] = mean_z
+            res[layer_idx][name+"_sigma"] = sigma_z
+    print(res)
+    torch.save(res, f"{model_name}_bound.pth")
+            
 
 def compute_worse_prob(model_name):
     if model_name == "llama3":
@@ -143,17 +239,10 @@ def compute_worse_prob(model_name):
             # e.g., "model.layers.0.self_attn.q_proj" -> "self_attn.q_proj"
             component_name = ".".join(key.split(".")[3:])  # Skip "model.layers.X"
             
-            if key.endswith("_k"):
-                # This is a k value, remove "_k" suffix to get component name
-                component_name = component_name[:-2]  # Remove "_k"
-                if component_name not in component_k_values:
-                    component_k_values[component_name] = []
-                component_k_values[component_name].append(value)
-            else:
-                # This is a probability value
-                if component_name not in component_p_values:
-                    component_p_values[component_name] = []
-                component_p_values[component_name].append(value)
+            # This is a probability value
+            if component_name not in component_p_values:
+                component_p_values[component_name] = []
+            component_p_values[component_name].append(value)
     
     # Compute min k and max p for each component
     results = {}
@@ -166,95 +255,28 @@ def compute_worse_prob(model_name):
     all_components = set(component_k_values.keys()) | set(component_p_values.keys())
     
     for component in sorted(all_components):
-        min_k = min(component_k_values[component]) if component in component_k_values else float('inf')
         max_p = max(component_p_values[component]) if component in component_p_values else 0.0
         
         results[component] = {
-            'min_k': min_k,
             'max_p': max_p
         }
         
-        print(f"{component:<40}\t{min_k:.6f}\t{max_p:.6e}")
+        print(f"{component:<40}\t{max_p:.6e}")
     
     # Find global minimum k and maximum p across all components
-    all_min_k_values = [results[comp]['min_k'] for comp in results if results[comp]['min_k'] != float('inf')]
     all_max_p_values = [results[comp]['max_p'] for comp in results]
     
-    global_min_k = min(all_min_k_values) if all_min_k_values else float('inf')
     global_max_p = max(all_max_p_values) if all_max_p_values else 0.0
     
-    print(f"\nGlobal minimum k across all components: {global_min_k}")
     print(f"Global maximum p across all components: {global_max_p}")
     
     # Save processed statistics
     torch.save(results, f"{model_name}_component_worse_prob_analysis.pth")
     
     return {
-        'global_min_k': global_min_k,
         'global_max_p': global_max_p,
         'component_stats': results
     }
-
-def compute_bound(model):
-    model_name = "llama3"
-    stat = torch.load(f"{model_name}_processed_stat.pth")
-    res = [{} for _ in range(32)]
-    for name,layer in model.named_modules():
-        if isinstance(layer,int_linear_fake.QuantLinear):
-            # print("name:",name)
-            layer_idx = int(name.split(".")[2])
-            weight_int = layer.weight_quantizer.get_int(layer.weight).to(torch.float64)
-            # print(weight_int.shape)
-            # Compute L1 and L2 norms along the input dimension (dim=1) for each output neuron
-            l1_norms = torch.norm(weight_int, p=1, dim=1)  # [out_features]
-            l2_norms = torch.norm(weight_int, p=2, dim=1)  # [out_features]
-            # Take the maximum ratio across all output neurons (dim=0)
-            tmp_k = torch.min(l1_norms / l2_norms)
-            # print(tmp_k)
-            tmp_k = tmp_k.detach().cpu().numpy()
-            if "q_proj" in name or "k_proj" in name or "v_proj" in name:
-                sigma_x = torch.sqrt(stat[layer_idx]["qkv_var"]).detach().cpu().numpy()
-            elif "o_proj" in name:
-                sigma_x = torch.sqrt(stat[layer_idx]["o_var"]).detach().cpu().numpy()
-            elif "up_proj" in name or "gate_proj" in name:
-                sigma_x = torch.sqrt(stat[layer_idx]["up_gate_var"]).detach().cpu().numpy()
-            elif "down_proj" in name:
-                sigma_x = torch.sqrt(stat[layer_idx]["down_var"]).detach().cpu().numpy()
-            else:
-                raise ValueError(f"Unsupported layer: {name}")
-            k = 8/sigma_x * tmp_k
-            z_score = k.astype(np.float64)
-            prob_tail = st.norm.sf(z_score)
-            p_overflow = 2 * prob_tail
-            res[layer_idx][name] = p_overflow
-            res[layer_idx][name+"_k"] = z_score
-        elif isinstance(layer, QKRotationWrapper):
-            layer_idx = int(name.split(".")[2])
-            sigma_q = torch.sqrt(stat[layer_idx]["q_var"]).detach().cpu().numpy()
-            sigma_k = torch.sqrt(stat[layer_idx]["k_var"]).detach().cpu().numpy()
-            sigma_q = sigma_q.astype(np.float32)
-            sigma_k = sigma_k.astype(np.float32)
-            k = np.sqrt(128) * (2 ** 3 -1 )*(2 ** 3 -1 )/(sigma_q * sigma_k)
-            z_score = k.astype(np.float64)
-            prob_tail = st.norm.sf(z_score)
-            p_overflow = 2 * prob_tail
-            res[layer_idx][name] = p_overflow
-            res[layer_idx][name+"_k"] = z_score
-        elif "s_quantizer" in name:
-            layer_idx = int(name.split(".")[2])
-            sigma_v = torch.sqrt(stat[layer_idx]["v_var"]).detach().cpu().numpy()
-            sigma_s = torch.sqrt(stat[layer_idx]["s_var"]).detach().cpu().numpy()
-            sigma_v = sigma_v.astype(np.float32)
-            sigma_s = sigma_s.astype(np.float32)
-            k = np.sqrt(128) * (2 ** 7 -1 )*(2 ** 3 -1 )/(sigma_v * sigma_s)
-            z_score = k.astype(np.float64)
-            prob_tail = st.norm.sf(z_score)
-            p_overflow = 2 * prob_tail
-            res[layer_idx][name] = p_overflow
-            res[layer_idx][name+"_k"] = z_score
-    print(res)
-    torch.save(res, f"{model_name}_bound.pth")
-            
 
 def main():
     import argparse
@@ -346,7 +368,6 @@ def main():
     load_checkpoint_in_model(model,checkpoint=args.quant_model_path,device_map=device_map,dtype=torch.float16)
     model.half()    # to make sure same evaluation results with main
     logger.info(model)
-    # compute_bound(model)
     # b_acc = compute_bacc(model)
     add_overflow_hook(model)
     # logger.info(f"b_acc: {b_acc}")
@@ -354,7 +375,7 @@ def main():
     evaluate(model, tokenizer, prefixed_key_values,  args,logger)
     torch.save(stat, f"{model_name}_stat.pth")
     process_stat(model_name)
-    compute_bound(model)
+    compute_bound(model, model_name)
     ans = compute_worse_prob(model_name)
     print(ans)
 
@@ -362,4 +383,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # model_name = "llama2"
+    # compute_bound(model, model_name)
+    # ans = compute_worse_prob(model_name)
+    # print(ans)
+    # a = torch.load("llama3_component_worse_prob_analysis.pth",weights_only=False)
+    # print(a)
 
