@@ -74,15 +74,11 @@ Then, you should get the results shown in our paper, for example:
 Modify the code in `check_overflow.py`, change `model_name` to `llama2` or `llama3` to check the probability of overflow for `Llama-2-7B` or `Llama-3-8B`. Note that you should comment out the clip operator in `quantize/quantizer.py` as described before to get the same results as ours. Then run the following command:
 
 ```
-CUDA_VISIBLE_DEVICES=5 python check_overflow.py \
+CUDA_VISIBLE_DEVICES=0 python check_overflow.py \
 --quant_model ./pre_quantized_models/Llama-3-8B-w4a4q4s8kv4 \
 --eval_batch_size 64 \
 --eval_ppl \
 --eval_tasks  piqa,arc_easy,arc_challenge,hellaswag,winogrande
 
 ```
-The results will contain the probability of overflow for each component. For example:
-```
-'model.layers.0.self_attn.q_proj': 0.0, 'model.layers.0.self_attn.q_proj_k': 82.63000982057005
-```
-where k represents the bound in Theorem 1 and Theorem 2 in our paper.
+The results will contain the probability of overflow for each component. You can check the example results in `llama2.txt' or `llama3.txt`.
