@@ -1,8 +1,3 @@
-# Artifact for USENIX Security 2026 Submission PrivLLM-Q
-
-This repository provides the artifact for our USENIX Security 2026 paper.  
-
-
 ## Overview
 
 We release two main modules in this repository:
