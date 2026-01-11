@@ -1,0 +1,573 @@
+#include "bit-triple-generator.h"
+#include <OTPrimitive/ot_primitive.h>
+#include <Utils/emp-tool.h>
+#include <Datatype/Tensor.h>
+#include <seal/util/common.h>
+#include <cmath>
+#pragma once
+#define MILL_PARAM 4
+using namespace Datatype;
+namespace OTProtocol {
+// Cheetah's variant MillionaireProtocol when USE_CHEETAH=1
+template <typename IO> class MillionaireProtocol {
+public:
+  IO *io = nullptr;
+  OTPrimitive::OTPack<IO> *otpack;
+  TripleGenerator<IO> *triple_gen;
+  int party;
+  int l, r, log_alpha, beta, beta_pow;
+  int num_digits, num_triples_corr, num_triples_std, log_num_digits;
+  int num_triples;
+  uint8_t mask_beta, mask_r;
+  Datatype::OT_TYPE ot_type;
+
+  MillionaireProtocol(int party, IO *io, OTPrimitive::OTPack<IO> *otpack,
+                      int bitlength = 32, int radix_base = MILL_PARAM, OT_TYPE ot_type = Datatype::IKNP) {
+    this->party = party;
+    this->io = io;
+    this->otpack = otpack;
+    this->ot_type = ot_type;
+    this->triple_gen = new TripleGenerator<IO>(party, io, otpack);
+    configure(bitlength, radix_base);
+  }
+
+  void configure(int bitlength, int radix_base = MILL_PARAM) {
+    assert(radix_base <= 8);
+    assert(bitlength <= 128);
+    this->l = bitlength;
+    this->beta = radix_base;
+
+    this->num_digits = ceil((double)l / beta);
+    this->r = l % beta;
+    this->log_alpha = Utils::bitlen(num_digits) - 1;
+    this->log_num_digits = log_alpha + 1;
+    this->num_triples_corr = 2 * num_digits - 2 - 2 * log_num_digits;
+    this->num_triples_std = log_num_digits;
+    this->num_triples = num_triples_std + num_triples_corr;
+    if (beta == 8)
+      this->mask_beta = -1;
+    else
+      this->mask_beta = (1 << beta) - 1;
+    this->mask_r = (1 << r) - 1;
+    this->beta_pow = 1 << beta;
+  }
+
+  ~MillionaireProtocol() { delete triple_gen; }
+
+  // default output 1{x_1<x_2}, note that x_1, x_2 are the secret shares of the input
+  // Supports both uint64_t and int128_t
+  template <typename T>
+  void compare(uint8_t *res, T *data, int num_cmps, int bitlength,
+               bool greater_than = true,
+               int radix_base = MILL_PARAM) {
+    configure(bitlength, radix_base);
+    // printf("bitlength: %d, beta:%d\n", bitlength,beta);
+    if (bitlength <= beta) {
+      uint8_t N = 1 << bitlength;
+      T mask = (bitlength == 128) ? static_cast<T>(-1) : ((static_cast<T>(1) << bitlength) - 1);
+      if (party == ALICE) {
+        Utils::PRG128 prg;
+        prg.random_data(res, num_cmps * sizeof(uint8_t));
+        uint8_t **leaf_messages = new uint8_t *[num_cmps];
+        for (int i = 0; i < num_cmps; i++) {
+          res[i] &= 1;
+          leaf_messages[i] = new uint8_t[N];
+          for (int j = 0; j < N; j++) {
+            T masked_val = data[i] & mask;
+            uint8_t val_uint8 = static_cast<uint8_t>(masked_val);
+            if (greater_than) {
+              leaf_messages[i][j] = ((val_uint8 > j) ^ res[i]);
+            } else {
+              leaf_messages[i][j] = ((val_uint8 < j) ^ res[i]);
+            }
+          }
+        }
+        if (bitlength > 1) {
+          // std::cout << "bitlength:" << bitlength << std::endl;
+          otpack->kkot[bitlength - 1]->send(leaf_messages, num_cmps, 1);
+          // std::cout << "send done " << std::endl;
+        } else {
+          otpack->iknp_straight->send(leaf_messages, num_cmps, 1);
+        }
+
+        for (int i = 0; i < num_cmps; i++)
+          delete[] leaf_messages[i];
+        delete[] leaf_messages;
+      } else { // party == BOB
+        uint8_t *choice = new uint8_t[num_cmps];
+        for (int i = 0; i < num_cmps; i++) {
+          T masked_val = data[i] & mask;
+          choice[i] = static_cast<uint8_t>(masked_val);
+        }
+        if (bitlength > 1) {
+          otpack->kkot[bitlength - 1]->recv(res, choice, num_cmps, 1);
+          // std::cout << "recv done " << std::endl;
+        } else {
+          otpack->iknp_straight->recv(res, choice, num_cmps, 1);
+        }
+
+        delete[] choice;
+      }
+      return;
+    }
+
+    int old_num_cmps = num_cmps;
+    // num_cmps should be a multiple of 8
+    num_cmps = ceil(num_cmps / 8.0) * 8;
+
+    T *data_ext;
+    if (old_num_cmps == num_cmps)
+      data_ext = data;
+    else {
+      data_ext = new T[num_cmps];
+      memcpy(data_ext, data, old_num_cmps * sizeof(T));
+      memset(data_ext + old_num_cmps, 0,
+             (num_cmps - old_num_cmps) * sizeof(T));
+    }
+
+    uint8_t *digits;       // num_digits * num_cmps
+    uint8_t *leaf_res_cmp; // num_digits * num_cmps
+    uint8_t *leaf_res_eq;  // num_digits * num_cmps
+
+    digits = new uint8_t[num_digits * num_cmps];
+    leaf_res_cmp = new uint8_t[num_digits * num_cmps];
+    leaf_res_eq = new uint8_t[num_digits * num_cmps];
+
+    // Extract radix-digits from data
+    for (int i = 0; i < num_digits; i++) { // Stored from LSB to MSB
+      int shift_amount = i * beta;
+      for (int j = 0; j < num_cmps; j++) {
+        T shifted_val = (shift_amount < 128) ? (data_ext[j] >> shift_amount) : static_cast<T>(0);
+        if ((i == num_digits - 1) && (r != 0))
+          digits[i * num_cmps + j] = static_cast<uint8_t>(shifted_val) & mask_r;
+        else
+          digits[i * num_cmps + j] = static_cast<uint8_t>(shifted_val) & mask_beta;
+      }
+    }
+
+
+    if (party == ALICE) {
+      uint8_t *
+          *leaf_ot_messages; // (num_digits * num_cmps) X beta_pow (=2^beta)
+      leaf_ot_messages = new uint8_t *[num_digits * num_cmps];
+      for (int i = 0; i < num_digits * num_cmps; i++)
+        leaf_ot_messages[i] = new uint8_t[beta_pow];
+
+      // Set Leaf OT messages
+      triple_gen->prg->random_bool((bool *)leaf_res_cmp, num_digits * num_cmps);
+      triple_gen->prg->random_bool((bool *)leaf_res_eq, num_digits * num_cmps);
+
+      for (int i = 0; i < num_digits; i++) {
+        for (int j = 0; j < num_cmps; j++) {
+          if (i == 0) {
+            set_leaf_ot_messages(leaf_ot_messages[i * num_cmps + j],
+                                 digits[i * num_cmps + j], beta_pow,
+                                 leaf_res_cmp[i * num_cmps + j], 0,
+                                 greater_than, false);
+          } else if (i == (num_digits - 1) && (r > 0)) {
+            if (ot_type == Datatype::VOLE) {
+              printf("VOLE OT\n");
+              set_leaf_ot_messages(leaf_ot_messages[i * num_cmps + j],
+                                   digits[i * num_cmps + j], beta_pow,
+                                   leaf_res_cmp[i * num_cmps + j],
+                                   leaf_res_eq[i * num_cmps + j], greater_than);
+            } else if (ot_type == Datatype::IKNP) {
+              set_leaf_ot_messages(leaf_ot_messages[i * num_cmps + j],
+                                   digits[i * num_cmps + j], 1 << r,
+                                   leaf_res_cmp[i * num_cmps + j],
+                                   leaf_res_eq[i * num_cmps + j], greater_than);
+            } else {
+              throw std::invalid_argument("OT type not supported!");
+            }
+          }
+          else{
+            set_leaf_ot_messages(leaf_ot_messages[i * num_cmps + j],
+                                 digits[i * num_cmps + j], beta_pow,
+                                 leaf_res_cmp[i * num_cmps + j],
+                                 leaf_res_eq[i * num_cmps + j], greater_than);
+          }
+        }
+      }
+
+      // Perform Leaf OTs
+      if (ot_type == Datatype::VOLE) {
+        // otpack->kkot_beta->send(leaf_ot_messages, num_cmps*(num_digits), 2);
+        otpack->kkot[beta - 1]->send(leaf_ot_messages, num_cmps * (num_digits),
+                                   2);
+      }
+      else if (ot_type == Datatype::IKNP) {
+        // otpack->kkot_beta->send(leaf_ot_messages, num_cmps, 1);
+        otpack->kkot[beta - 1]->send(leaf_ot_messages, num_cmps, 1);
+        if (r == 1) {
+          // otpack->kkot_beta->send(leaf_ot_messages+num_cmps,
+          // num_cmps*(num_digits-2), 2);
+          otpack->kkot[beta - 1]->send(leaf_ot_messages + num_cmps,
+                                      num_cmps * (num_digits - 2), 2);
+          otpack->iknp_straight->send(
+              leaf_ot_messages + num_cmps * (num_digits - 1), num_cmps, 2);
+        } else if (r != 0) {
+          // otpack->kkot_beta->send(leaf_ot_messages+num_cmps,
+          // num_cmps*(num_digits-2), 2);
+          otpack->kkot[beta - 1]->send(leaf_ot_messages + num_cmps,
+                                      num_cmps * (num_digits - 2), 2);
+          otpack->kkot[r - 1]->send(
+              leaf_ot_messages + num_cmps * (num_digits - 1), num_cmps, 2);
+          /*
+                              if(r == 2){
+                                      otpack->kkot_4->send(leaf_ot_messages+num_cmps*(num_digits-1),
+            num_cmps, 2);
+                              }
+                              else if(r == 3){
+                                      otpack->kkot_8->send(leaf_ot_messages+num_cmps*(num_digits-1),
+            num_cmps, 2);
+                              }
+                              else if(r == 4){
+                                      otpack->kkot_16->send(leaf_ot_messages+num_cmps*(num_digits-1),
+            num_cmps, 2);
+                              }
+                              else{
+                                      throw std::invalid_argument("Not yet
+            implemented!");
+                              }
+          */
+        } else {
+        // otpack->kkot_beta->send(leaf_ot_messages+num_cmps,
+        // num_cmps*(num_digits-1), 2);
+        otpack->kkot[beta - 1]->send(leaf_ot_messages + num_cmps,
+                                     num_cmps * (num_digits - 1), 2);
+      }
+      }
+      else {
+        throw std::invalid_argument("OT type not supported!");
+      }
+      // Cleanup
+      for (int i = 0; i < num_digits * num_cmps; i++)
+        delete[] leaf_ot_messages[i];
+      delete[] leaf_ot_messages;
+    } 
+    else // party = BOB
+    {
+      // Perform Leaf OTs
+      if (ot_type == Datatype::VOLE) {
+        otpack->kkot[beta - 1]->recv(leaf_res_cmp, digits,
+                                     num_cmps * (num_digits), 2);
+      }
+      else if (ot_type == Datatype::IKNP) {
+        otpack->kkot[beta - 1]->recv(leaf_res_cmp, digits, num_cmps, 1);
+        if (r == 1) {
+          otpack->kkot[beta - 1]->recv(leaf_res_cmp + num_cmps, digits + num_cmps,
+                                      num_cmps * (num_digits - 2), 2);
+          otpack->iknp_straight->recv(leaf_res_cmp + num_cmps * (num_digits - 1),
+                                      digits + num_cmps * (num_digits - 1),
+                                      num_cmps, 2);
+        } else if (r != 0) {
+          otpack->kkot[beta - 1]->recv(leaf_res_cmp + num_cmps, digits + num_cmps,
+                                      num_cmps * (num_digits - 2), 2);
+          otpack->kkot[r - 1]->recv(leaf_res_cmp + num_cmps * (num_digits - 1),
+                                    digits + num_cmps * (num_digits - 1),
+                                    num_cmps, 2);
+        } else {
+          otpack->kkot[beta - 1]->recv(leaf_res_cmp + num_cmps, digits + num_cmps,
+                                      num_cmps * (num_digits - 1), 2);
+        }
+      }
+      else {
+        throw std::invalid_argument("OT type not supported!");
+      }
+
+      // Extract equality result from leaf_res_cmp
+      for (int i = num_cmps; i < num_digits * num_cmps; i++) {
+        leaf_res_eq[i] = leaf_res_cmp[i] & 1;
+        leaf_res_cmp[i] >>= 1;
+      }
+    }
+
+    traverse_and_compute_ANDs(num_cmps, leaf_res_eq, leaf_res_cmp);
+
+    for (int i = 0; i < old_num_cmps; i++)
+      res[i] = leaf_res_cmp[i];
+
+    // Cleanup
+    if (old_num_cmps != num_cmps)
+      delete[] data_ext;
+    delete[] digits;
+    delete[] leaf_res_cmp;
+    delete[] leaf_res_eq;
+  }
+
+  void set_leaf_ot_messages(uint8_t *ot_messages, uint8_t digit, int N,
+                            uint8_t mask_cmp, uint8_t mask_eq,
+                            bool greater_than, bool eq = true) {
+    for (int i = 0; i < N; i++) {
+      if (greater_than) {
+        ot_messages[i] = ((digit > i) ^ mask_cmp);
+      } else {
+        ot_messages[i] = ((digit < i) ^ mask_cmp);
+      }
+      if (eq) {
+        ot_messages[i] = (ot_messages[i] << 1) | ((digit == i) ^ mask_eq);
+      }
+    }
+  }
+
+  /**************************************************************************************************
+   *                         AND computation related functions
+   **************************************************************************************************/
+
+  void traverse_and_compute_ANDs(int num_cmps, uint8_t *leaf_res_eq,
+                                 uint8_t *leaf_res_cmp) {
+    Triple *triples_std;
+    Triple *triples_corr;
+    if (ot_type == Datatype::VOLE) {
+      triples_std = new Triple((num_triples)*num_cmps, true);
+    }
+    else if (ot_type == Datatype::IKNP) {
+      triples_corr = new Triple(num_triples_corr * num_cmps, true, num_cmps);
+      triples_std = new Triple(num_triples_std * num_cmps, true);
+    }
+    else {
+      throw std::invalid_argument("OT type not supported!");
+    }
+    // Generate required Bit-Triples
+    if (ot_type == Datatype::VOLE) {
+      triple_gen->generate(party, triples_std, _2ROT);
+    }
+    else{
+      triple_gen->generate(party, triples_corr, _8KKOT);
+      triple_gen->generate(party, triples_std, _16KKOT_to_4OT);
+    }
+    int counter_std = 0, old_counter_std = 0;
+    int counter_corr = 0, old_counter_corr = 0;
+    int counter_combined = 0, old_counter_combined = 0;
+    uint8_t *ei = new uint8_t[(num_triples * num_cmps) / 8];
+    uint8_t *fi = new uint8_t[(num_triples * num_cmps) / 8];
+    uint8_t *e = new uint8_t[(num_triples * num_cmps) / 8];
+    uint8_t *f = new uint8_t[(num_triples * num_cmps) / 8];
+
+    for (int i = 1; i < num_digits; i *= 2) {
+      for (int j = 0; j < num_digits and j + i < num_digits; j += 2 * i) {
+        if (j == 0) {
+          if (ot_type == Datatype::VOLE) {
+            AND_step_1(
+                ei + (counter_std * num_cmps) / 8,
+                fi + (counter_std * num_cmps) / 8, leaf_res_cmp + j * num_cmps,
+                leaf_res_eq + (j + i) * num_cmps,
+                (triples_std->ai) + (counter_combined * num_cmps) / 8,
+                (triples_std->bi) + (counter_combined * num_cmps) / 8, num_cmps);
+            counter_std++;
+            counter_combined++;
+          }
+          else{
+            AND_step_1(ei + (counter_std * num_cmps) / 8,
+                      fi + (counter_std * num_cmps) / 8,
+                      leaf_res_cmp + j * num_cmps,
+                      leaf_res_eq + (j + i) * num_cmps,
+                      (triples_std->ai) + (counter_std * num_cmps) / 8,
+                      (triples_std->bi) + (counter_std * num_cmps) / 8, num_cmps);
+            counter_std++;
+          }
+        } else {
+          if (ot_type == Datatype::VOLE) {
+            AND_step_1(
+                ei + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                fi + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                leaf_res_cmp + j * num_cmps, leaf_res_eq + (j + i) * num_cmps,
+                (triples_std->ai) + (counter_combined * num_cmps) / 8,
+                (triples_std->bi) + (counter_combined * num_cmps) / 8, num_cmps);
+            counter_combined++;
+            AND_step_1(
+                ei + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                fi + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                leaf_res_eq + j * num_cmps, leaf_res_eq + (j + i) * num_cmps,
+                (triples_std->ai) + (counter_combined * num_cmps) / 8,
+                (triples_std->bi) + (counter_combined * num_cmps) / 8, num_cmps);
+            counter_combined++;
+            counter_corr++;
+          }
+          else{
+            AND_step_1(
+                ei + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+              fi + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+              leaf_res_cmp + j * num_cmps, leaf_res_eq + (j + i) * num_cmps,
+              (triples_corr->ai) + (2 * counter_corr * num_cmps) / 8,
+              (triples_corr->bi) + (2 * counter_corr * num_cmps) / 8, num_cmps);
+            AND_step_1(
+                ei + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                fi + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                leaf_res_eq + j * num_cmps, leaf_res_eq + (j + i) * num_cmps,
+                (triples_corr->ai) + ((2 * counter_corr + 1) * num_cmps) / 8,
+                (triples_corr->bi) + ((2 * counter_corr + 1) * num_cmps) / 8,
+                num_cmps);
+            counter_corr++;
+          }
+        }
+      }
+      int offset_std = (old_counter_std * num_cmps) / 8;
+      int size_std = ((counter_std - old_counter_std) * num_cmps) / 8;
+      int offset_corr =
+          ((num_triples_std + 2 * old_counter_corr) * num_cmps) / 8;
+      int size_corr = (2 * (counter_corr - old_counter_corr) * num_cmps) / 8;
+
+      if (party == ALICE) {
+        io->send_data(ei + offset_std, size_std);
+        io->send_data(ei + offset_corr, size_corr);
+        io->send_data(fi + offset_std, size_std);
+        io->send_data(fi + offset_corr, size_corr);
+        io->recv_data(e + offset_std, size_std);
+        io->recv_data(e + offset_corr, size_corr);
+        io->recv_data(f + offset_std, size_std);
+        io->recv_data(f + offset_corr, size_corr);
+      } else // party = BOB
+      {
+        io->recv_data(e + offset_std, size_std);
+        io->recv_data(e + offset_corr, size_corr);
+        io->recv_data(f + offset_std, size_std);
+        io->recv_data(f + offset_corr, size_corr);
+        io->send_data(ei + offset_std, size_std);
+        io->send_data(ei + offset_corr, size_corr);
+        io->send_data(fi + offset_std, size_std);
+        io->send_data(fi + offset_corr, size_corr);
+      }
+      for (int i = 0; i < size_std; i++) {
+        e[i + offset_std] ^= ei[i + offset_std];
+        f[i + offset_std] ^= fi[i + offset_std];
+      }
+      for (int i = 0; i < size_corr; i++) {
+        e[i + offset_corr] ^= ei[i + offset_corr];
+        f[i + offset_corr] ^= fi[i + offset_corr];
+      }
+
+      counter_std = old_counter_std;
+      counter_corr = old_counter_corr;
+      if (ot_type == Datatype::VOLE) {
+        counter_combined = old_counter_combined;
+      }
+      for (int j = 0; j < num_digits and j + i < num_digits; j += 2 * i) {
+        if (j == 0) {
+          if (ot_type == Datatype::VOLE) {
+          AND_step_2(
+              leaf_res_cmp + j * num_cmps, e + (counter_std * num_cmps) / 8,
+              f + (counter_std * num_cmps) / 8,
+              ei + (counter_std * num_cmps) / 8,
+              fi + (counter_std * num_cmps) / 8,
+              (triples_std->ai) + (counter_combined * num_cmps) / 8,
+              (triples_std->bi) + (counter_combined * num_cmps) / 8,
+              (triples_std->ci) + (counter_combined * num_cmps) / 8, num_cmps);
+          counter_combined++;
+          }
+          else{
+            AND_step_2(leaf_res_cmp + j * num_cmps,
+                     e + (counter_std * num_cmps) / 8,
+                     f + (counter_std * num_cmps) / 8,
+                     ei + (counter_std * num_cmps) / 8,
+                     fi + (counter_std * num_cmps) / 8,
+                     (triples_std->ai) + (counter_std * num_cmps) / 8,
+                     (triples_std->bi) + (counter_std * num_cmps) / 8,
+                     (triples_std->ci) + (counter_std * num_cmps) / 8, num_cmps);
+          }
+          for (int k = 0; k < num_cmps; k++)
+            leaf_res_cmp[j * num_cmps + k] ^=
+                leaf_res_cmp[(j + i) * num_cmps + k];
+          counter_std++;
+        } else {
+          if (ot_type == Datatype::VOLE) {
+            AND_step_2(leaf_res_cmp + j * num_cmps,
+                      e + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      f + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      ei + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      fi + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      (triples_std->ai) + (counter_combined * num_cmps) / 8,
+                      (triples_std->bi) + (counter_combined * num_cmps) / 8,
+                      (triples_std->ci) + (counter_combined * num_cmps) / 8,
+                      num_cmps);
+            counter_combined++;
+            AND_step_2(
+                leaf_res_eq + j * num_cmps,
+                e + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                f + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                ei + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                fi + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                (triples_std->ai) + (counter_combined * num_cmps) / 8,
+                (triples_std->bi) + (counter_combined * num_cmps) / 8,
+                (triples_std->ci) + (counter_combined * num_cmps) / 8, num_cmps);
+            counter_combined++;
+          }
+          else{
+            AND_step_2(leaf_res_cmp + j * num_cmps,
+                      e + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      f + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      ei + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      fi + ((num_triples_std + 2 * counter_corr) * num_cmps) / 8,
+                      (triples_corr->ai) + (2 * counter_corr * num_cmps) / 8,
+                      (triples_corr->bi) + (2 * counter_corr * num_cmps) / 8,
+                      (triples_corr->ci) + (2 * counter_corr * num_cmps) / 8,
+                      num_cmps);
+            AND_step_2(
+                leaf_res_eq + j * num_cmps,
+                e + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                f + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                ei + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                fi + ((num_triples_std + (2 * counter_corr + 1)) * num_cmps) / 8,
+                (triples_corr->ai) + ((2 * counter_corr + 1) * num_cmps) / 8,
+                (triples_corr->bi) + ((2 * counter_corr + 1) * num_cmps) / 8,
+                (triples_corr->ci) + ((2 * counter_corr + 1) * num_cmps) / 8,
+                num_cmps);
+          }
+          for (int k = 0; k < num_cmps; k++)
+            leaf_res_cmp[j * num_cmps + k] ^=
+                leaf_res_cmp[(j + i) * num_cmps + k];
+          counter_corr++;
+        }
+      }
+      old_counter_std = counter_std;
+      old_counter_corr = counter_corr;
+      if (ot_type == Datatype::VOLE) {
+        old_counter_combined = counter_combined;
+      }
+    }
+
+    if (ot_type == Datatype::VOLE) {
+      assert(counter_combined == num_triples);
+    }
+    else{
+      assert(counter_std == num_triples_std);
+      assert(2 * counter_corr == num_triples_corr);
+    }
+
+    // cleanup
+    delete[] ei;
+    delete[] fi;
+    delete[] e;
+    delete[] f;
+  }
+
+  void AND_step_1(uint8_t *ei, // evaluates batch of 8 ANDs
+                  uint8_t *fi, uint8_t *xi, uint8_t *yi, uint8_t *ai,
+                  uint8_t *bi, int num_ANDs) {
+    assert(num_ANDs % 8 == 0);
+    for (int i = 0; i < num_ANDs; i += 8) {
+      ei[i / 8] = ai[i / 8];
+      fi[i / 8] = bi[i / 8];
+      ei[i / 8] ^= Utils::bool_to_uint8(xi + i, 8);
+      fi[i / 8] ^= Utils::bool_to_uint8(yi + i, 8);
+    }
+  }
+  void AND_step_2(uint8_t *zi, // evaluates batch of 8 ANDs
+                  uint8_t *e, uint8_t *f, uint8_t *ei, uint8_t *fi, uint8_t *ai,
+                  uint8_t *bi, uint8_t *ci, int num_ANDs) {
+    assert(num_ANDs % 8 == 0);
+    for (int i = 0; i < num_ANDs; i += 8) {
+      uint8_t temp_z;
+      if (party == ALICE)
+        temp_z = e[i / 8] & f[i / 8];
+      else
+        temp_z = 0;
+      temp_z ^= f[i / 8] & ai[i / 8];
+      temp_z ^= e[i / 8] & bi[i / 8];
+      temp_z ^= ci[i / 8];
+      Utils::uint8_to_bool(zi + i, temp_z, 8);
+    }
+  }
+};
+
+} // namespace OTProtocol 

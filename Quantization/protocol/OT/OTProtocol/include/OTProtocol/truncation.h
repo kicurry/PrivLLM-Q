@@ -1,0 +1,140 @@
+#pragma once
+#include "aux-protocols.h"
+#include "equality.h"
+#include "millionaire_with_equality.h"
+
+using namespace OTPrimitive;
+using namespace Utils;
+using namespace OTProtocol;
+
+namespace OTProtocol {
+
+class TruncationProtocol {
+public:
+  OTPrimitive::OTPack<Utils::NetIO> *otpack;
+  OTProtocol::TripleGenerator<Utils::NetIO> *triple_gen = nullptr;
+  OTProtocol::MillionaireProtocol<Utils::NetIO> *mill = nullptr;
+  OTProtocol::MillionaireWithEquality<Utils::NetIO> *mill_eq = nullptr;
+  OTProtocol::Equality<Utils::NetIO> *eq = nullptr;
+  OTProtocol::AuxProtocols *aux = nullptr;
+  bool del_aux = false;
+  bool del_milleq = false;
+  int party;
+
+  // Constructor
+  TruncationProtocol(int party, OTPrimitive::OTPack<Utils::NetIO> *otpack,
+             OTProtocol::AuxProtocols *auxp = nullptr,
+             OTProtocol::MillionaireWithEquality<Utils::NetIO> *mill_eq_in = nullptr);
+
+  // Destructor
+  ~TruncationProtocol();
+
+  // Truncate (right-shift) by shift in the same ring (round towards -inf)
+  void truncate(
+      // Size of vector
+      int32_t dim,
+      // input vector
+      uint64_t *inA,
+      // output vector
+      uint64_t *outB,
+      // right shift amount
+      int32_t shift,
+      // Input and output bitwidth
+      int32_t bw,
+      // signed truncation?
+      bool signed_arithmetic = true,
+      // msb of input vector elements
+      uint8_t *msb_x = nullptr,
+      // add big positive before truncation
+      bool apply_msb0_heuristic = true);
+
+  // Truncate (right-shift) by shift in the same ring (round towards -inf)
+  void truncate_msb(
+      // Size of vector
+      int32_t dim,
+      // input vector
+      uint64_t *inA,
+      // output vector
+      uint64_t *outB,
+      // right shift amount
+      int32_t shift,
+      // Input and output bitwidth
+      int32_t bw,
+      // signed truncation?
+      bool signed_arithmetic,
+      // msb of input vector elements
+      uint8_t *msb_x);
+
+  // Truncate (right-shift) by shift in the same ring (round towards -inf)
+  // All elements have msb equal to 0.
+  void truncate_msb0(
+      // Size of vector
+      int32_t dim,
+      // input vector
+      uint64_t *inA,
+      // output vector
+      uint64_t *outB,
+      // right shift amount
+      int32_t shift,
+      // Input and output bitwidth
+      int32_t bw,
+      // signed truncation?
+      bool signed_arithmetic = true);
+
+  // Divide by 2^shift in the same ring (round towards 0)
+  void div_pow2(
+      // Size of vector
+      int32_t dim,
+      // input vector
+      uint64_t *inA,
+      // output vector
+      uint64_t *outB,
+      // right shift amount
+      int32_t shift,
+      // Input and output bitwidth
+      int32_t bw,
+      // signed truncation?
+      bool signed_arithmetic = true,
+      // msb of input vector elements
+      uint8_t *msb_x = nullptr);
+
+  // Truncate (right-shift) by shift in the same ring
+//   void truncate_red_then_ext(
+//       // Size of vector
+//       int32_t dim,
+//       // input vector
+//       uint64_t *inA,
+//       // output vector
+//       uint64_t *outB,
+//       // right shift amount
+//       int32_t shift,
+//       // Input and output bitwidth
+//       int32_t bw,
+//       // signed truncation?
+//       bool signed_arithmetic = true,
+//       // msb of input vector elements
+//       uint8_t *msb_x = nullptr);
+
+  // Truncate (right-shift) by shift and go to a smaller ring
+  void truncate_and_reduce(
+      // Size of vector
+      int32_t dim,
+      // input vector
+      uint64_t *inA,
+      // output vector
+      uint64_t *outB,
+      // right shift amount
+      int32_t shift,
+      // Input bitwidth
+      int32_t bw);
+};
+
+class ReLUTruncationProtocol {
+    public:
+        TruncationProtocol *truncationProtocol;
+        ReLUTruncationProtocol(TruncationProtocol *truncationProtocol){
+            this->truncationProtocol = truncationProtocol;
+        }
+};
+
+} // namespace OTProtocol
